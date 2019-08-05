@@ -3,7 +3,6 @@
 import requests
 from bs4 import BeautifulSoup
 import re
-import numpy as np
 from time import sleep, time
 import sched
 from datetime import datetime
@@ -26,6 +25,25 @@ def init_database():
     conn.commit()
 
 
+def growth_rate(votes):
+    try:
+        y = ((votes[-1] - votes[0])/votes[0]) * 100
+        x = y/len(votes)
+    except ZeroDivisionError:
+        x = 0
+    return x
+
+def init_linear_growth_table():
+    global linear_growth_table
+    linear_growth_table = []
+    for val in range(1, 46):
+        temp = [i for i in range(1, val)]
+        if len(temp) > 1:
+            linear_growth_table.append(growth_rate(temp))
+            # print(temp)
+            # print(growth_rate(temp))
+
+
 def clean():
     delete_list = []
     for key in db:
@@ -42,13 +60,14 @@ def clean():
 
 
 def debug(ad_id, vote, title, time):
-    debug_file = open('debug.txt', 'w')
-    debug_file.write(ad_id+", "+vote+", "+title+", "+time)
+    debug_file = open('debug.txt', 'a')
+    debug_file.write(ad_id+", "+vote+", "+title+", "+time+"\n")
     debug_file.close()
 
 
 def store(ad_id, vote, title, time):
     debug(ad_id, vote, title, time)
+    # print(ad_id, vote, title, time)
     if ad_id in db:
         db[ad_id]['vote'].append(int(vote))
 
@@ -90,22 +109,22 @@ def process_page(link):
 '''
 
 
-def growth_rate():
+def deal_growth_rate_cal():
     for key in db:
-        if len(db[key]['vote']) > 1:
+        if len(db[key]['vote']) > 2:
             # print(db[key]['vote'])
-            a = np.array([db[key]['vote']]).astype(float)
-            growth_rate = np.nanmean((a[:, 1:]/a[:, :-1]), axis=1) - 1
-            # Need a Better Notification Mechanism
-            if growth_rate > 0.51:
-                print("Found a Good Deal")
+            growth_r = growth_rate(db[key]['vote'])
+            # print("Growth_rate "+str(growth_r))
+            if growth_r > 350:
+                print(db[key])
                 # Email Me
 
 
 if __name__ == "__main__":
+    init_linear_growth_table()
     while True:
         process_page('https://www.ozbargain.com.au/deals')
-        growth_rate()
+        deal_growth_rate_cal()
         clean()
-        sleep(5)
+        sleep(60)
     # ozbargain_struct(response)
