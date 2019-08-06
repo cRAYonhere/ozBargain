@@ -33,6 +33,7 @@ def growth_rate(votes):
         x = 0
     return x
 
+
 def init_linear_growth_table():
     global linear_growth_table
     linear_growth_table = []
