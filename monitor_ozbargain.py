@@ -8,31 +8,59 @@ import sched
 from datetime import datetime
 import sqlite3
 import base64
+import uuid
 
 import pickle
 import os.path
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-from email.mime.text import MIMEText
+
 
 
 db = {}
 s = sched.scheduler(time, sleep)
 SCOPES = ['https://www.googleapis.com/auth/gmail.send']
 
-def init_database():
-    conn = sqlite3.connect('deal.db')
-    global c
+def init_databases():
+    conn = sqlite3.connect('ozbargain.db')
     c = conn.cursor()
-    c.execute('''CREATE TABLE DEALS(
-    [deal_id] INTEGER PRIMARY KEY,
-    [title] TEXT,o365_auth = ('YourAccount@office365.com','YourPassword')
-    [vote] TEXT,
-    [datetime] DATETIME)
-    ''')
+
+    try:
+        c.execute('''CREATE TABLE VOTES(
+        [entry_id] PRIMARY KEY,
+        [deal_id] INTEGER,
+        [vote] TEXT,
+        [datetime] DATETIME)
+        ''')
+    except sqlite3.OperationalError as error:
+        print("Warning in VOTES: ",error)
+        input("Press Any Key to continue, Ctrl+C to exit")
+
+    try:
+        c.execute('''CREATE TABLE DEALS(
+        [deal_id] PRIMARY KEY,
+        [title] TEXT,
+        [datetime] DATETIME,
+        [email_sent] INTEGER)
+        ''')
+    except sqlite3.OperationalError as error:
+        print("Warning in DEALS: ",error)
+        input("Press Any Key to continue, Ctrl+C to exit")
+
+    try:
+        c.execute('''CREATE TABLE USERS(
+        [email] TEXT,
+        [wants] TEXT,
+        [priority] INTEGER),
+        UNIQUE(email,wants)
+        ''')
+    except sqlite3.OperationalError as error:
+        print("Warning in USERS: ",error)
+        input("Press Any Key to continue, Ctrl+C to exit")
+
     conn.commit()
+    conn.close()
 
 
 def growth_rate(votes):
@@ -70,31 +98,9 @@ def clean():
         del db[key]
 
 
-def debug(ad_id, vote, title, time):
-    debug_file = open('debug.txt', 'a')
-    debug_file.write(ad_id+", "+vote+", "+title+", "+time+"\n")
-    debug_file.close()
 
 
-def store(ad_id, vote, title, time):
-    debug(ad_id, vote, title, time)
-    # print(ad_id, vote, title, time)
-    if ad_id in db:
-        db[ad_id]['vote'].append(int(vote))
-
-        """
-        c.execute('''INSERT INTO DEALS(
-        [deal_id] INTEGER PRIMARY KEY,
-        [title] TEXT,
-        [vote] TEXT,
-        [datetime] DATETIME)''')
-        """
-
-    else:
-        db[ad_id] = {'vote': [int(vote)], 'title': title, 'time': time}
-
-
-def process_page(link):
+def process_page(conn, link):
     page = requests.get(link)
     soup = BeautifulSoup(page.text, 'html.parser')
     # Title = soup.findAll('h2', {'class':'title'})
@@ -106,70 +112,67 @@ def process_page(link):
         date_time = re.search(
             r'[0-9]{2}/[0-9]{2}/20[0-9]{2} - [0-9]{2}:[0-9]{2}',
             str(div_submitted)).group()
-        store(
-            ad['id'],
-            re.search(r'[0-9]+', str(span_voteup.find('span'))).group(),
-            ad.find('h2', {'class': 'title'})['data-title'],
-            date_time
-            )
 
+        insert_deals = '''INSERT INTO DEALS(deal_id, title, datetime, email_sent) VALUES (?, ?, ?, ?)'''
+        insert_votes = '''INSERT INTO VOTES(entry_id, deal_id, vote, datetime) VALUES (?, ?, ?, ?)'''
 
-'''
-    src: https://stackoverflow.com/questions/
-    34516729/quickest-way-to-calculate-the-average-growth-rate-across-columns-of-a-numpy-arra
-'''
+        #DEAL
+        value = (
+                    ad['id'].replace('node',''),
+                    ad.find('h2', {'class': 'title'})['data-title'],
+                    date_time,
+                    0
+                )
+        try:
+            conn.execute(insert_deals, value)
+        except sqlite3.IntegrityError as error:
+            pass
+        except sqlite3.OperationalError as error:
+            print("Warning Insert in deal: ", error)
+            input("Press Any Key to continue, Ctrl+C to exit")
+        #VOTE
+        value = (
+                    str(uuid.uuid1()),
+                    ad['id'].replace('node',''),
+                    re.search(r'[0-9]+', str(span_voteup.find('span'))).group(),
+                    date_time,
+                )
+        try:
+            conn.execute(insert_votes, value)
+        except sqlite3.OperationalError as error:
+            print("Warning Insert in deal: ", error)
+            input("Press Any Key to continue, Ctrl+C to exit")
 
+def trending_deal():
+    pass
 
-def deal_growth_rate_cal():
-    for key in db:
-        if len(db[key]['vote']) > 2:
-            # print(db[key]['vote'])
-            growth_r = growth_rate(db[key]['vote'])
-            # print("Growth_rate "+str(growth_r))
-            if growth_r > 350:
-                print(db[key])
-                init_email()
+def add_users(conn):
+    '''
+    https://stackoverflow.com/questions/50535725/manage-data-from-txt-file-to-store-it-to-sqlite3-in-python
+    '''
+    # read data from file
+    f = open('wanted.txt', 'r')
+    cont = f.read()
+    f.close()
 
+    # format for inserting to db
+    rows = cont.split('\n')
+    formatted = [tuple(x.split()) for x in rows]
+    insert_user_needs = '''INSERT INTO VOTES(email, wants, priority) VALUES (?, ?, ?)'''
+    for item in formatted:
+        try:
+            conn.execute(insert_user_needs, item)
+        except sqlite3.IntegrityError as error:
+            pass
+        except sqlite3.OperationalError as error:
+            print("Warning Insert in deal: ", error)
+            input("Press Any Key to continue, Ctrl+C to exit")
 
-def create_message(sender, to, subject, message_text):
-    """Create a message for an email.
+def wanted_item(conn):
+    add_users(conn)
+    
 
-    Args:
-    sender: Email address of the sender.
-    to: Email address of the receiver.
-    subject: The subject of the email message.
-    message_text: The text of the email message.
-
-    Returns:
-    An object containing a base64url encoded email object.
-    """
-    message = MIMEText(message_text)
-    message['to'] = to
-    message['from'] = sender
-    message['subject'] = subject
-    return {'raw': base64.urlsafe_b64encode(message.as_string().encode()).decode()}
-
-def send_message(service, user_id, message):
-    """
-    Send an email message.
-
-    Args:
-        service: Authorized Gmail API service instance.
-        user_id: User's email address. The special value "me"
-        can be used to indicate the authenticated user.
-    message: Message to be sent.
-
-    Returns:
-        Sent Message.
-    """
-    try:
-        message = (service.users().messages().send(userId=user_id, body=message).execute())
-        print('Message Id: %s', message['id'])
-        return message
-    except HttpError as error:
-        print('An error occurred: %s', error)
-
-def init_email():
+def init_email(message):
     """
     Shows basic usage of the Gmail API.
     Lists the user's Gmail labels.
@@ -196,15 +199,22 @@ def init_email():
     service = build('gmail', 'v1', credentials=creds)
 
     # Call the Gmail API
-    message = create_message()
+    return service
+    message = create_message("pytonray@gmail.com",)
     send_message(service, "me", message)
 
 if __name__ == "__main__":
-
-    init_linear_growth_table()
+    add_users()
+    '''
+    #init_linear_growth_table()
+    init_databases()
+    conn = sqlite3.connect('ozbargain.db')
     while True:
-        process_page('https://www.ozbargain.com.au/deals')
-        deal_growth_rate_cal()
+        process_page(conn,'https://www.ozbargain.com.au/deals?page=1')
+        process_page(conn, 'https://www.ozbargain.com.au/deals?page=2')
+        trending_deal()
+        wanted_item(conn)
         clean()
-        sleep(60)
+        sleep(5)
     # ozbargain_struct(response)
+    '''
