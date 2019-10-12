@@ -5,22 +5,22 @@ from bs4 import BeautifulSoup
 import re
 from time import sleep, time
 import sched
-from datetime import datetime
 import sqlite3
-import base64
 import uuid
-
 import pickle
 import os.path
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from fuzzywuzzy import fuzz
 
 
+from email_me import create_message, send_message
 
-db = {}
 s = sched.scheduler(time, sleep)
 SCOPES = ['https://www.googleapis.com/auth/gmail.send']
+STRING_MATCHING_THRESHOLD = 49
+
 
 def init_databases():
     conn = sqlite3.connect('ozbargain.db')
@@ -34,7 +34,7 @@ def init_databases():
         [datetime] DATETIME)
         ''')
     except sqlite3.OperationalError as error:
-        print("Warning in VOTES: ",error)
+        print("Warning in VOTES: ", error)
         input("Press Any Key to continue, Ctrl+C to exit")
 
     try:
@@ -45,18 +45,18 @@ def init_databases():
         [email_sent] INTEGER)
         ''')
     except sqlite3.OperationalError as error:
-        print("Warning in DEALS: ",error)
+        print("Warning in DEALS: ", error)
         input("Press Any Key to continue, Ctrl+C to exit")
 
     try:
         c.execute('''CREATE TABLE USERS(
         [email] TEXT,
         [wants] TEXT,
-        [priority] INTEGER),
-        UNIQUE(email,wants)
+        [priority] INTEGER,
+        UNIQUE(email,wants))
         ''')
     except sqlite3.OperationalError as error:
-        print("Warning in USERS: ",error)
+        print("Warning in USERS: ", error)
         input("Press Any Key to continue, Ctrl+C to exit")
 
     conn.commit()
@@ -83,23 +83,6 @@ def init_linear_growth_table():
             # print(growth_rate(temp))
 
 
-def clean():
-    delete_list = []
-    for key in db:
-        # print(db[key]['time'])
-        datetime_object = datetime.strptime(
-            db[key]['time'],
-            '%d/%m/%Y - %H:%M'
-            )
-        time_elapsed = datetime.now() - datetime_object
-        if(time_elapsed.total_seconds()/60 > 45):
-            delete_list.append(key)
-    for key in delete_list:
-        del db[key]
-
-
-
-
 def process_page(conn, link):
     page = requests.get(link)
     soup = BeautifulSoup(page.text, 'html.parser')
@@ -113,12 +96,22 @@ def process_page(conn, link):
             r'[0-9]{2}/[0-9]{2}/20[0-9]{2} - [0-9]{2}:[0-9]{2}',
             str(div_submitted)).group()
 
-        insert_deals = '''INSERT INTO DEALS(deal_id, title, datetime, email_sent) VALUES (?, ?, ?, ?)'''
-        insert_votes = '''INSERT INTO VOTES(entry_id, deal_id, vote, datetime) VALUES (?, ?, ?, ?)'''
+        insert_deals = '''INSERT INTO DEALS(
+                                            deal_id,
+                                            title,
+                                            datetime,
+                                            email_sent)
+                                            VALUES (?, ?, ?, ?)'''
+        insert_votes = '''INSERT INTO VOTES(
+                                            entry_id,
+                                            deal_id,
+                                            vote,
+                                            datetime)
+                                            VALUES (?, ?, ?, ?)'''
 
-        #DEAL
+        # DEAL
         value = (
-                    ad['id'].replace('node',''),
+                    ad['id'].replace('node', ''),
                     ad.find('h2', {'class': 'title'})['data-title'],
                     date_time,
                     0
@@ -130,21 +123,23 @@ def process_page(conn, link):
         except sqlite3.OperationalError as error:
             print("Warning Insert in deal: ", error)
             input("Press Any Key to continue, Ctrl+C to exit")
-        #VOTE
+        # VOTE
         value = (
                     str(uuid.uuid1()),
-                    ad['id'].replace('node',''),
+                    ad['id'].replace('node', ''),
                     re.search(r'[0-9]+', str(span_voteup.find('span'))).group(),
                     date_time,
                 )
         try:
             conn.execute(insert_votes, value)
         except sqlite3.OperationalError as error:
-            print("Warning Insert in deal: ", error)
+            print("Warning Insert in vote: ", error)
             input("Press Any Key to continue, Ctrl+C to exit")
+
 
 def trending_deal():
     pass
+
 
 def add_users(conn):
     '''
@@ -158,19 +153,79 @@ def add_users(conn):
     # format for inserting to db
     rows = cont.split('\n')
     formatted = [tuple(x.split()) for x in rows]
-    insert_user_needs = '''INSERT INTO VOTES(email, wants, priority) VALUES (?, ?, ?)'''
+    insert_user_needs = ('''INSERT INTO USERS(
+                                            email,
+                                            wants,
+                                            priority)
+                                            VALUES (?, ?, ?)''')
     for item in formatted:
         try:
-            conn.execute(insert_user_needs, item)
+            if item:
+                conn.execute(insert_user_needs, item)
         except sqlite3.IntegrityError as error:
             pass
         except sqlite3.OperationalError as error:
-            print("Warning Insert in deal: ", error)
+            print("Warning Insert in user: ", error)
             input("Press Any Key to continue, Ctrl+C to exit")
 
+
+def removearticles(text):
+    '''
+    https://stackoverflow.com/questions/4709665/remove-all-articles-connector-words-etc-from-a-string-in-python
+    '''
+    articles = {'a': '', 'an': '', 'and': '', 'the': ''}
+    rest = []
+    for word in text.split():
+        if word not in articles:
+            rest.append(word)
+    return ' '.join(rest)
+
+
+def substring_search(user_wants, deal_title):
+    '''
+    https://chairnerd.seatgeek.com/fuzzywuzzy-fuzzy-string-matching-in-python/
+    '''
+    if user_wants in deal_title:
+        return 1
+    score = fuzz.ratio(user_wants, deal_title)
+    print(score)
+    if score > STRING_MATCHING_THRESHOLD:
+        return 1
+    return 0
+
+
 def wanted_item(conn):
+    email_dict = {}
+    fetch_user_wants = ('''SELECT email, wants
+                            FROM USERS''')
+    fetch_deals = ('''SELECT deal_id,title,email_sent
+                        FROM DEALS''')
     add_users(conn)
-    
+
+    cur = conn.cursor()
+
+    cur.execute(fetch_user_wants)
+    user_wants_list = cur.fetchall()
+
+    cur.execute(fetch_deals)
+    deals_list = cur.fetchall()
+    # print(user_wants_list)
+    # print(deals_list)
+    for user_wants in user_wants_list:
+        for deal in deals_list:
+            temp1 = user_wants[1].lower()
+            temp2 = deal[1].lower()
+            if deal[2] == 0 and substring_search(temp1, temp2):
+                if user_wants[0] in email_dict:
+                    email_dict[user_wants[0]].append(deal[0])
+
+    update_email_set = ('''UPDATE DEALS
+                        SET email_sent = 1
+                        WHERE email_sent = 0''')
+    cur.execute(update_email_set)
+    for key in email_dict.keys():
+        print(key+' '+email_dict[key])
+
 
 def init_email(message):
     """
@@ -203,18 +258,14 @@ def init_email(message):
     message = create_message("pytonray@gmail.com",)
     send_message(service, "me", message)
 
+
 if __name__ == "__main__":
-    add_users()
-    '''
-    #init_linear_growth_table()
+
     init_databases()
     conn = sqlite3.connect('ozbargain.db')
     while True:
-        process_page(conn,'https://www.ozbargain.com.au/deals?page=1')
+        process_page(conn, 'https://www.ozbargain.com.au/deals?page=1')
         process_page(conn, 'https://www.ozbargain.com.au/deals?page=2')
-        trending_deal()
         wanted_item(conn)
-        clean()
         sleep(5)
     # ozbargain_struct(response)
-    '''

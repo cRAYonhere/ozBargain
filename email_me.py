@@ -21,6 +21,7 @@ def create_message(sender, to, subject, message_text):
     message['subject'] = subject
     return {'raw': base64.urlsafe_b64encode(message.as_string().encode()).decode()}
 
+
 def send_message(service, user_id, message):
     """
     Send an email message.
